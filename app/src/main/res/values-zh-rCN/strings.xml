@@ -16,7 +16,7 @@
 
 <resources>
 
-    <string name="app_name">EhViewer</string>
+    <string name="app_name">EhViewer CORS</string>
 
     <!-- Theme -->
     <string name="theme_light">亮色主题</string>
@@ -548,6 +548,11 @@
     <string name="settings_eh_tag_translations_source_url">https://github.com/Mapaler/EhTagTranslator/wiki</string>
     <string name="settings_eh_filter">屏蔽画廊</string>
     <string name="settings_eh_filter_summary">根据标题、上传者、标签屏蔽画廊</string>
+    <string name="settings_eh_cors_image_enabled">CORS 图片加速</string>
+    <string name="settings_eh_cors_image_enabled_summary">通过自定义 CORS 服务器加载图片，失败自动回退原图</string>
+    <string name="settings_eh_cors_image_server">CORS 服务器地址</string>
+    <string name="settings_eh_cors_image_server_summary">路径前缀式，例如 https://cors.example.com/</string>
+
     <string name="settings_eh_cellular_network_warning">移动网络警告</string>
 
     <string name="settings_read">阅读</string>

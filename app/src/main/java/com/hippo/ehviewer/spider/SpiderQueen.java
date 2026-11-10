@@ -38,6 +38,7 @@ import com.hippo.ehviewer.GetText;
 import com.hippo.ehviewer.R;
 import com.hippo.ehviewer.Settings;
 import com.hippo.ehviewer.client.EhEngine;
+import com.hippo.ehviewer.client.CorsImageProxy;
 import com.hippo.ehviewer.client.EhRequestBuilder;
 import com.hippo.ehviewer.client.EhUrl;
 import com.hippo.ehviewer.client.data.GalleryInfo;
@@ -1271,6 +1272,7 @@ public final class SpiderQueen implements Runnable {
             boolean forceHtml = false;
             boolean interrupt = false;
             boolean leakSkipHathKey = false;
+            boolean corsFailed = false;
 
             for (int i = 0; i < 5; i++) {
                 String imageUrl = null;
@@ -1402,6 +1404,16 @@ public final class SpiderQueen implements Runnable {
                     Log.d(TAG, targetImageUrl);
                 }
 
+                String requestUrl = targetImageUrl;
+                boolean usingCors = false;
+                if (!corsFailed) {
+                    String proxiedUrl = CorsImageProxy.proxyUrl(targetImageUrl);
+                    if (proxiedUrl != null) {
+                        requestUrl = proxiedUrl;
+                        usingCors = true;
+                    }
+                }
+
                 // Download image
                 InputStream is = null;
                 try {
@@ -1413,7 +1425,7 @@ public final class SpiderQueen implements Runnable {
                     // disable Call Timeout for image-downloading requests
                     Call call = mHttpClient.newBuilder()
                             .callTimeout(downloadTimeout, TimeUnit.SECONDS).build()
-                            .newCall(new EhRequestBuilder(targetImageUrl, referer).build());
+                            .newCall(new EhRequestBuilder(requestUrl, referer).build());
                     Response response = call.execute();
                     ResponseBody responseBody = response.body();
 
@@ -1423,8 +1435,8 @@ public final class SpiderQueen implements Runnable {
                     } else if (response.cacheResponse() != null) {
                         responseUrl = response.cacheResponse().request().url().toString();
                     }
-                    // 反劫持校验
-                    if (!targetImageUrl.equals(responseUrl)) {
+                    // 反劫持校验；CORS 中转时不比对最终 URL，避免误判。
+                    if (!usingCors && !targetImageUrl.equals(responseUrl)) {
                         error = "链接疑似被劫持\nThe link is suspected to be hijacked";
                         response.close();
                         forceHtml = true;
@@ -1434,12 +1446,25 @@ public final class SpiderQueen implements Runnable {
                     if (response.code() >= 400) {
                         // Maybe 404
                         response.close();
+                        if (usingCors) {
+                            corsFailed = true;
+                            mSpiderDen.remove(index);
+                            error = "CORS bad code: " + response.code();
+                            continue;
+                        }
                         error = "Bad code: " + response.code();
                         forceHtml = true;
                         continue;
                     }
 
                     if (responseBody == null) {
+                        response.close();
+                        if (usingCors) {
+                            corsFailed = true;
+                            mSpiderDen.remove(index);
+                            error = "CORS empty response body";
+                            continue;
+                        }
                         error = "Empty response body";
                         forceHtml = true;
                         continue;
@@ -1448,6 +1473,14 @@ public final class SpiderQueen implements Runnable {
                     // Get extension
                     String extension = null;
                     MediaType mediaType = responseBody.contentType();
+                    if (usingCors && mediaType != null
+                            && !"image".equalsIgnoreCase(mediaType.type())) {
+                        response.close();
+                        corsFailed = true;
+                        mSpiderDen.remove(index);
+                        error = "CORS non-image response";
+                        continue;
+                    }
                     if (mediaType != null) {
                         extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mediaType.toString());
                         if (extension != null&&!extension.contains(".")){
@@ -1518,6 +1551,19 @@ public final class SpiderQueen implements Runnable {
                         if (contentLength >= 0) {
                             if (receivedSize < contentLength) {
                                 Log.e(TAG, "Can't download all of image data");
+                                if (usingCors) {
+                                    // Truncated relay response: discard the partial
+                                    // file and retry the original URL once.
+                                    corsFailed = true;
+                                    error = "CORS incomplete response";
+                                    if (osPipe != null) {
+                                        osPipe.close();
+                                        osPipe.release();
+                                        osPipe = null;
+                                    }
+                                    mSpiderDen.remove(index);
+                                    continue;
+                                }
                                 error = "Incomplete";
                                 forceHtml = true;
                                 continue;
@@ -1557,6 +1603,17 @@ public final class SpiderQueen implements Runnable {
                             }
                         }
                         if (isPlainTxt) {
+                            if (usingCors) {
+                                corsFailed = true;
+                                error = "CORS plain text response";
+                                if (isPipe != null) {
+                                    isPipe.close();
+                                    isPipe.release();
+                                    isPipe = null;
+                                }
+                                mSpiderDen.remove(index);
+                                continue;
+                            }
                             error = GetText.getString(R.string.error_reading_failed);
                             forceHtml = true;
                             continue;
@@ -1590,7 +1647,13 @@ public final class SpiderQueen implements Runnable {
                 } catch (IOException | NoSuchElementException e) {
                     e.printStackTrace();
                     error = GetText.getString(R.string.error_socket);
-                    forceHtml = true;
+                    if (usingCors) {
+                        corsFailed = true;
+                        mSpiderDen.remove(index);
+                        forceHtml = false;
+                    } else {
+                        forceHtml = true;
+                    }
                 } finally {
                     IOUtils.closeQuietly(is);
 
