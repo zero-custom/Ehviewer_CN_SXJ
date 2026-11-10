@@ -3,7 +3,7 @@
   "versionCode": 111,
   "mustUpdate": false,
   "updateContent": {
-    "fileDownloadUrl": "https://github.com/zero-custom/Ehviewer_CN_SXJ-2.0.2.7/releases/download/2.0.2.7/EhViewer-2.0.2.7-cors.apk",
+    "fileDownloadUrl": "https://github.com/zero-custom/Ehviewer_CN_SXJ/releases/download/2.0.2.7-cors/EhViewer-2.0.2.7-cors.apk",
     "title": "EhViewer CORS 2.0.2.7",
     "content": [
       "CORS 图片加速",
