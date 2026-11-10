@@ -1,0 +1,1357 @@
+diff --git a/app/src/main/java/com/hippo/conaco/ConacoTask.java b/app/src/main/java/com/hippo/conaco/ConacoTask.java
+index 2312cdc..898594d 100644
+--- a/app/src/main/java/com/hippo/conaco/ConacoTask.java
++++ b/app/src/main/java/com/hippo/conaco/ConacoTask.java
+@@ -18,6 +18,7 @@ package com.hippo.conaco;
+ 
+ 
+ import android.os.AsyncTask;
++import android.os.SystemClock;
+ import android.util.Log;
+ 
+ import androidx.annotation.Nullable;
+@@ -25,6 +26,7 @@ import androidx.annotation.UiThread;
+ 
+ import com.hippo.beerbelly.SimpleDiskCache;
+ import com.hippo.ehviewer.client.CorsImageProxy;
++import com.hippo.ehviewer.client.CorsLog;
+ import com.hippo.streampipe.InputStreamPipe;
+ import com.hippo.streampipe.OutputStreamPipe;
+ 
+@@ -350,6 +352,13 @@ public class ConacoTask<V> {
+             return call.execute();
+         }
+ 
++        private static String contentType(Response response) {
++            if (response == null || response.body() == null || response.body().contentType() == null) {
++                return null;
++            }
++            return response.body().contentType().toString();
++        }
++
+         private boolean isBadResponse(Response response) {
+             if (response == null || !response.isSuccessful()) {
+                 return true;
+@@ -385,16 +394,23 @@ public class ConacoTask<V> {
+                 Request request = null;
+                 Response response = null;
+                 String proxiedUrl = CorsImageProxy.proxyUrl(mUrl);
++                boolean proxied = proxiedUrl != null;
++                long started = SystemClock.elapsedRealtime();
++                CorsLog.request("conaco", mUrl, proxied ? proxiedUrl : mUrl, proxied, 1, -1);
+                 if (proxiedUrl != null) {
+                     try {
+                         request = new Request.Builder().url(proxiedUrl).build();
+                         response = open(request);
+                         if (isBadResponse(response)) {
++                            CorsLog.fallback("conaco", mUrl, "bad_response", true,
++                                    response.code(), contentType(response), -1, null);
+                             response.close();
+                             response = null;
+                             request = null;
+                         }
+                     } catch (IOException e) {
++                        CorsLog.fallback("conaco", mUrl, "io", true, -1, null, -1,
++                                e.getMessage());
+                         // Connection failures and timeouts on the relay must fall
+                         // back to the original URL exactly once.
+                         if (response != null) {
+@@ -409,10 +425,19 @@ public class ConacoTask<V> {
+                     response = open(request);
+                 }
+                 ResponseBody body = response.body();
++                CorsLog.response("conaco", mUrl, response.code(),
++                        body != null && body.contentType() != null
++                                ? body.contentType().toString() : null,
++                        body != null ? body.contentLength() : -1,
++                        SystemClock.elapsedRealtime() - started, proxied, -1);
+                 if (body == null) {
++                    CorsLog.result("conaco", mUrl, false, 0,
++                            SystemClock.elapsedRealtime() - started, proxied, -1);
+                     response.close();
+                     return null;
+                 }
++                CorsLog.result("conaco", mUrl, true, body.contentLength(),
++                        SystemClock.elapsedRealtime() - started, proxied, -1);
+                 is = body.byteStream();
+ 
+                 if (isNotNecessary(this)) {
+@@ -444,6 +469,9 @@ public class ConacoTask<V> {
+                         if (!responseHttpUrl.equals(requestHttpUrl)) {
+                             mDataContainer.onUrlMoved(mUrl, responseHttpUrl.url().toString());
+                         }
++                    } else if (!response.request().url().equals(request.url())) {
++                        CorsLog.redirect("conaco", request.url().toString(),
++                                response.request().url().toString(), true);
+                     }
+ 
+                     // Put to data container
+diff --git a/app/src/main/java/com/hippo/ehviewer/EhApplication.java b/app/src/main/java/com/hippo/ehviewer/EhApplication.java
+index 2346322..6d92cd5 100644
+--- a/app/src/main/java/com/hippo/ehviewer/EhApplication.java
++++ b/app/src/main/java/com/hippo/ehviewer/EhApplication.java
+@@ -46,6 +46,8 @@ import com.hippo.beerbelly.SimpleDiskCache;
+ import com.hippo.conaco.Conaco;
+ import com.hippo.content.RecordingApplication;
+ import com.hippo.ehviewer.client.EhClient;
++import com.hippo.ehviewer.client.CorsLog;
++import com.hippo.ehviewer.client.CorsLogServer;
+ import com.hippo.ehviewer.client.EhCookieStore;
+ import com.hippo.ehviewer.client.EhHosts;
+ import com.hippo.ehviewer.client.EhEngine;
+@@ -249,6 +251,19 @@ public class EhApplication extends RecordingApplication {
+             debugPrint();
+         }
+ 
++        // CORS online log API (fork-only debug overlay)
++        final boolean logApiEnabled = Settings.getCorsLogEnabled();
++        CorsLog.get().log("app.start", CorsLog.obj(
++                "version", BuildConfig.VERSION_NAME,
++                "versionCode", BuildConfig.VERSION_CODE,
++                "corsEnabled", Settings.getCorsImageEnabled(),
++                "corsServer", Settings.getCorsImageServer(),
++                "logApiEnabled", logApiEnabled));
++        if (logApiEnabled) {
++            IoThreadPoolExecutor.Companion.getInstance()
++                    .execute(() -> CorsLogServer.get().start());
++        }
++
+         initialized = true;
+     }
+ 
+diff --git a/app/src/main/java/com/hippo/ehviewer/Settings.java b/app/src/main/java/com/hippo/ehviewer/Settings.java
+index 10a4b4e..2a17476 100644
+--- a/app/src/main/java/com/hippo/ehviewer/Settings.java
++++ b/app/src/main/java/com/hippo/ehviewer/Settings.java
+@@ -1589,6 +1589,20 @@ public class Settings {
+         putString(KEY_CORS_IMAGE_SERVER, value);
+     }
+ 
++    /********************
++     ****** CORS online log
++     ********************/
++    public static final String KEY_CORS_LOG_ENABLED = "cors_log_enabled";
++    private static final boolean DEFAULT_CORS_LOG_ENABLED = false;
++
++    public static boolean getCorsLogEnabled() {
++        return getBoolean(KEY_CORS_LOG_ENABLED, DEFAULT_CORS_LOG_ENABLED);
++    }
++
++    public static void putCorsLogEnabled(boolean value) {
++        putBoolean(KEY_CORS_LOG_ENABLED, value);
++    }
++
+     public static final String KEY_LAST_UPDATE_TIME = "last_update_time";
+ 
+     public static long DEFAULT_LAST_UPDATE_TIME = 0L;
+diff --git a/app/src/main/java/com/hippo/ehviewer/client/CorsLog.java b/app/src/main/java/com/hippo/ehviewer/client/CorsLog.java
+new file mode 100644
+index 0000000..8a156c7
+--- /dev/null
++++ b/app/src/main/java/com/hippo/ehviewer/client/CorsLog.java
+@@ -0,0 +1,265 @@
++package com.hippo.ehviewer.client;
++
++import androidx.annotation.Nullable;
++
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.locks.Condition;
++import java.util.concurrent.locks.ReentrantLock;
++
++/**
++ * In-memory CORS diagnostics log. No data is written to disk.
++ *
++ * <p>Entries are kept in a bounded ring and exposed to the local HTTP API in
++ * {@link CorsLogServer}. The log deliberately stores no cookies or request
++ * headers; callers only pass the fields they want to inspect.</p>
++ */
++public final class CorsLog {
++
++    public static final int CAPACITY = 2000;
++    private static final int MAX_STRING_LENGTH = 1024;
++
++    private static final CorsLog INSTANCE = new CorsLog();
++
++    public static CorsLog get() {
++        return INSTANCE;
++    }
++
++    public static final class Entry {
++        public final long seq;
++        public final long ts;
++        public final String event;
++        public final String thread;
++        public final JSONObject data;
++
++        Entry(long seq, long ts, String event, String thread, JSONObject data) {
++            this.seq = seq;
++            this.ts = ts;
++            this.event = event;
++            this.thread = thread;
++            this.data = data;
++        }
++
++        public JSONObject toJson() {
++            JSONObject o = new JSONObject();
++            try {
++                o.put("seq", seq);
++                o.put("ts", ts);
++                o.put("event", event);
++                o.put("thread", thread);
++                o.put("data", data);
++            } catch (JSONException ignored) {
++            }
++            return o;
++        }
++    }
++
++    private final ArrayDeque<Entry> entries = new ArrayDeque<>(CAPACITY);
++    private final ReentrantLock lock = new ReentrantLock();
++    private final Condition changed = lock.newCondition();
++
++    private long nextSeq = 1;
++    private long lastClearedSeq = 0;
++
++    private CorsLog() {
++    }
++
++    public void log(String event, @Nullable JSONObject data) {
++        JSONObject payload = data == null ? new JSONObject() : data;
++        lock.lock();
++        try {
++            long seq = nextSeq++;
++            Entry entry = new Entry(seq, System.currentTimeMillis(), event,
++                    Thread.currentThread().getName(), payload);
++            entries.addLast(entry);
++            while (entries.size() > CAPACITY) {
++                entries.removeFirst();
++            }
++            changed.signalAll();
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    public List<Entry> snapshot(long after, int limit) {
++        lock.lock();
++        try {
++            return snapshotLocked(after, limit);
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    public List<Entry> await(long after, int limit, long waitMs) throws InterruptedException {
++        lock.lock();
++        try {
++            long floor = Math.max(after, lastClearedSeq);
++            long deadline = System.currentTimeMillis() + Math.max(0L, waitMs);
++            while (true) {
++                List<Entry> out = snapshotLocked(floor, limit);
++                if (!out.isEmpty() || waitMs <= 0L) {
++                    return out;
++                }
++                long remaining = deadline - System.currentTimeMillis();
++                if (remaining <= 0L) {
++                    return out;
++                }
++                changed.await(remaining, TimeUnit.MILLISECONDS);
++                floor = Math.max(floor, lastClearedSeq);
++            }
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    private List<Entry> snapshotLocked(long after, int limit) {
++        long floor = Math.max(after, lastClearedSeq);
++        int max = Math.max(1, Math.min(limit, CAPACITY));
++        List<Entry> out = new ArrayList<>();
++        for (Entry entry : entries) {
++            if (entry.seq > floor) {
++                out.add(entry);
++                if (out.size() >= max) {
++                    break;
++                }
++            }
++        }
++        return out;
++    }
++
++    public int clear() {
++        lock.lock();
++        try {
++            int cleared = entries.size();
++            lastClearedSeq = nextSeq - 1;
++            entries.clear();
++            changed.signalAll();
++            return cleared;
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    public long lastSeq() {
++        lock.lock();
++        try {
++            return nextSeq - 1;
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    public int size() {
++        lock.lock();
++        try {
++            return entries.size();
++        } finally {
++            lock.unlock();
++        }
++    }
++
++    /**
++     * Builds a JSON payload from alternating key/value pairs. String values are
++     * bounded so a single URL cannot grow the buffer without limit.
++     */
++    public static JSONObject obj(Object... keyValues) {
++        JSONObject o = new JSONObject();
++        if (keyValues == null) {
++            return o;
++        }
++        for (int i = 0; i + 1 < keyValues.length; i += 2) {
++            String key = String.valueOf(keyValues[i]);
++            Object value = keyValues[i + 1];
++            if (value instanceof String) {
++                String s = (String) value;
++                if (s.length() > MAX_STRING_LENGTH) {
++                    value = s.substring(0, MAX_STRING_LENGTH) + "...";
++                }
++            }
++            try {
++                o.put(key, value == null ? JSONObject.NULL : value);
++            } catch (JSONException ignored) {
++            }
++        }
++        return o;
++    }
++
++    public static void request(String source, String url, String requestUrl, boolean proxied,
++                               int attempt, int index) {
++        get().log("image.request", obj(
++                "source", source,
++                "url", url,
++                "requestUrl", requestUrl,
++                "proxied", proxied,
++                "attempt", attempt,
++                "index", index));
++    }
++
++    public static void response(String source, String url, int status, @Nullable String contentType,
++                                long contentLength, long elapsedMs, boolean proxied, int index) {
++        get().log("image.response", obj(
++                "source", source,
++                "url", url,
++                "status", status,
++                "contentType", contentType,
++                "contentLength", contentLength,
++                "elapsedMs", elapsedMs,
++                "proxied", proxied,
++                "index", index));
++    }
++
++    public static void fallback(String source, String url, String reason, boolean proxied,
++                                int status, @Nullable String contentType, int index,
++                                @Nullable String message) {
++        get().log("image.fallback", obj(
++                "source", source,
++                "url", url,
++                "reason", reason,
++                "proxied", proxied,
++                "status", status,
++                "contentType", contentType,
++                "index", index,
++                "message", message));
++    }
++
++    public static void retry(String source, String url, String reason, int index) {
++        get().log("image.retry", obj(
++                "source", source,
++                "url", url,
++                "reason", reason,
++                "next", "original",
++                "index", index));
++    }
++
++    public static void result(String source, String url, boolean ok, long bytes,
++                              long elapsedMs, boolean proxied, int index) {
++        get().log("image.result", obj(
++                "source", source,
++                "url", url,
++                "ok", ok,
++                "bytes", bytes,
++                "elapsedMs", elapsedMs,
++                "proxied", proxied,
++                "index", index));
++    }
++
++    public static void redirect(String source, String from, String to, boolean suppressed) {
++        get().log("image.redirect", obj(
++                "source", source,
++                "from", from,
++                "to", to,
++                "suppressed", suppressed));
++    }
++
++    public static void config(boolean enabled, String serverRaw, @Nullable String serverNormalized) {
++        get().log("cors.config", obj(
++                "enabled", enabled,
++                "serverRaw", serverRaw,
++                "serverNormalized", serverNormalized));
++    }
++}
+diff --git a/app/src/main/java/com/hippo/ehviewer/client/CorsLogServer.java b/app/src/main/java/com/hippo/ehviewer/client/CorsLogServer.java
+new file mode 100644
+index 0000000..1c5693b
+--- /dev/null
++++ b/app/src/main/java/com/hippo/ehviewer/client/CorsLogServer.java
+@@ -0,0 +1,450 @@
++package com.hippo.ehviewer.client;
++
++import android.text.TextUtils;
++
++import com.hippo.ehviewer.BuildConfig;
++import com.hippo.ehviewer.Settings;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.BufferedInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.net.Inet4Address;
++import java.net.InetAddress;
++import java.net.InetSocketAddress;
++import java.net.NetworkInterface;
++import java.net.ServerSocket;
++import java.net.Socket;
++import java.net.SocketTimeoutException;
++import java.net.URLDecoder;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.Enumeration;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Semaphore;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++/**
++ * Fork-only, read-only HTTP endpoint exposing {@link CorsLog}.
++ *
++ * <p>Binds 0.0.0.0:18765 with no authentication. The settings screen shows a
++ * warning; the API must never be exposed on an untrusted network.</p>
++ */
++public final class CorsLogServer {
++
++    public static final int PORT = 18765;
++
++    private static final int MAX_CONNECTIONS = 8;
++    private static final int READ_TIMEOUT_MS = 5000;
++    private static final int MAX_HEADER_BYTES = 8192;
++
++    private static final CorsLogServer INSTANCE = new CorsLogServer();
++
++    public static CorsLogServer get() {
++        return INSTANCE;
++    }
++
++    private final AtomicBoolean running = new AtomicBoolean(false);
++    private final Semaphore slots = new Semaphore(MAX_CONNECTIONS);
++
++    private volatile ServerSocket serverSocket;
++    private volatile Thread acceptThread;
++    private volatile ExecutorService workers;
++    private volatile String lastError;
++
++    private CorsLogServer() {
++    }
++
++    public synchronized boolean start() {
++        if (running.get()) {
++            return true;
++        }
++        try {
++            ServerSocket socket = new ServerSocket();
++            serverSocket = socket;
++            socket.setReuseAddress(true);
++            socket.bind(new InetSocketAddress("0.0.0.0", PORT));
++            socket.setSoTimeout(1000);
++            lastError = null;
++            running.set(true);
++            workers = Executors.newFixedThreadPool(4, r -> {
++                Thread t = new Thread(r, "CorsLogHttp");
++                t.setDaemon(true);
++                return t;
++            });
++            acceptThread = new Thread(this::acceptLoop, "CorsLogAccept");
++            acceptThread.setDaemon(true);
++            acceptThread.start();
++            CorsLog.get().log("logapi.start", CorsLog.obj(
++                    "port", PORT,
++                    "addresses", joinAddresses(getLanAddresses())));
++            return true;
++        } catch (Exception e) {
++            lastError = e.getMessage();
++            ServerSocket failed = serverSocket;
++            serverSocket = null;
++            if (failed != null) {
++                try {
++                    failed.close();
++                } catch (IOException ignored) {
++                }
++            }
++            CorsLog.get().log("logapi.error", CorsLog.obj(
++                    "message", String.valueOf(e)));
++            return false;
++        }
++    }
++
++    public synchronized void stop() {
++        if (!running.getAndSet(false)) {
++            return;
++        }
++        ServerSocket socket = serverSocket;
++        serverSocket = null;
++        if (socket != null) {
++            try {
++                socket.close();
++            } catch (IOException ignored) {
++            }
++        }
++        Thread thread = acceptThread;
++        acceptThread = null;
++        if (thread != null) {
++            thread.interrupt();
++        }
++        ExecutorService pool = workers;
++        workers = null;
++        if (pool != null) {
++            pool.shutdownNow();
++        }
++        CorsLog.get().log("logapi.stop", CorsLog.obj("port", PORT));
++    }
++
++    public boolean isRunning() {
++        return running.get();
++    }
++
++    public int getPort() {
++        return PORT;
++    }
++
++    public String getLastError() {
++        return lastError;
++    }
++
++    public static List<String> getLanAddresses() {
++        List<String> addresses = new ArrayList<>();
++        try {
++            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
++            while (interfaces != null && interfaces.hasMoreElements()) {
++                NetworkInterface network = interfaces.nextElement();
++                if (!network.isUp() || network.isLoopback()) {
++                    continue;
++                }
++                Enumeration<InetAddress> inetAddresses = network.getInetAddresses();
++                while (inetAddresses.hasMoreElements()) {
++                    InetAddress address = inetAddresses.nextElement();
++                    if (address instanceof Inet4Address
++                            && !address.isLoopbackAddress()
++                            && !address.isLinkLocalAddress()) {
++                        addresses.add(address.getHostAddress());
++                    }
++                }
++            }
++        } catch (Exception ignored) {
++        }
++        if (addresses.isEmpty()) {
++            addresses.add("127.0.0.1");
++        }
++        return addresses;
++    }
++
++    private static String joinAddresses(List<String> addresses) {
++        StringBuilder builder = new StringBuilder();
++        for (String address : addresses) {
++            if (builder.length() > 0) {
++                builder.append(", ");
++            }
++            builder.append(address);
++        }
++        return builder.toString();
++    }
++
++    private void acceptLoop() {
++        while (running.get()) {
++            ServerSocket server = serverSocket;
++            if (server == null) {
++                break;
++            }
++            try {
++                Socket socket = server.accept();
++                ExecutorService pool = workers;
++                if (pool != null) {
++                    pool.execute(() -> handle(socket));
++                } else {
++                    closeQuietly(socket);
++                }
++            } catch (SocketTimeoutException ignored) {
++            } catch (IOException e) {
++                if (running.get()) {
++                    lastError = e.getMessage();
++                    CorsLog.get().log("logapi.error", CorsLog.obj("message", String.valueOf(e)));
++                }
++                break;
++            }
++        }
++    }
++
++    private void handle(Socket socket) {
++        if (!slots.tryAcquire()) {
++            writeResponse(socket, 503, "Service Unavailable", "{\"error\":\"busy\"}",
++                    "application/json; charset=utf-8");
++            closeQuietly(socket);
++            return;
++        }
++        try {
++            socket.setSoTimeout(READ_TIMEOUT_MS);
++            Request request = readRequest(socket);
++            if (request == null) {
++                writeResponse(socket, 400, "Bad Request", "{\"error\":\"bad request\"}",
++                        "application/json; charset=utf-8");
++                return;
++            }
++            route(socket, request);
++        } catch (Exception e) {
++            CorsLog.get().log("logapi.error", CorsLog.obj("message", String.valueOf(e)));
++            writeResponse(socket, 500, "Internal Server Error", "{\"error\":\"internal\"}",
++                    "application/json; charset=utf-8");
++        } finally {
++            closeQuietly(socket);
++            slots.release();
++        }
++    }
++
++    private void route(Socket socket, Request request) throws IOException {
++        String path = request.path;
++        if ("/".equals(path)) {
++            if (!"GET".equals(request.method)) {
++                methodNotAllowed(socket);
++                return;
++            }
++            String text = "CORS log API\n"
++                    + "GET /status\n"
++                    + "GET /logs?after=<seq>&limit=<n>&wait=<ms>\n"
++                    + "DELETE /logs\n";
++            writeResponse(socket, 200, "OK", text, "text/plain; charset=utf-8");
++            return;
++        }
++        if ("/status".equals(path)) {
++            if (!"GET".equals(request.method)) {
++                methodNotAllowed(socket);
++                return;
++            }
++            writeResponse(socket, 200, "OK", statusJson().toString(),
++                    "application/json; charset=utf-8");
++            return;
++        }
++        if ("/logs".equals(path)) {
++            if ("GET".equals(request.method)) {
++                handleLogs(socket, request.query);
++            } else if ("DELETE".equals(request.method)) {
++                int cleared = CorsLog.get().clear();
++                JSONObject body = new JSONObject();
++                try {
++                    body.put("ok", true);
++                    body.put("cleared", cleared);
++                } catch (Exception ignored) {
++                }
++                writeResponse(socket, 200, "OK", body.toString(),
++                        "application/json; charset=utf-8");
++            } else {
++                methodNotAllowed(socket);
++            }
++            return;
++        }
++        writeResponse(socket, 404, "Not Found", "{\"error\":\"not found\"}",
++                "application/json; charset=utf-8");
++    }
++
++    private void handleLogs(Socket socket, Map<String, String> query) throws IOException {
++        long after;
++        int limit;
++        long wait;
++        try {
++            after = parseLong(query.get("after"), 0L);
++            limit = (int) Math.max(1L, Math.min(parseLong(query.get("limit"), 200L), 1000L));
++            wait = Math.max(0L, Math.min(parseLong(query.get("wait"), 0L), 30000L));
++        } catch (NumberFormatException e) {
++            writeResponse(socket, 400, "Bad Request", "{\"error\":\"bad parameter\"}",
++                    "application/json; charset=utf-8");
++            return;
++        }
++
++        List<CorsLog.Entry> entries;
++        try {
++            entries = CorsLog.get().await(after, limit, wait);
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            entries = new ArrayList<>();
++        }
++
++        JSONArray array = new JSONArray();
++        for (CorsLog.Entry entry : entries) {
++            array.put(entry.toJson());
++        }
++        JSONObject body = new JSONObject();
++        try {
++            body.put("entries", array);
++            body.put("lastSeq", CorsLog.get().lastSeq());
++        } catch (Exception ignored) {
++        }
++        writeResponse(socket, 200, "OK", body.toString(),
++                "application/json; charset=utf-8");
++    }
++
++    private JSONObject statusJson() {
++        JSONObject body = new JSONObject();
++        try {
++            body.put("version", BuildConfig.VERSION_NAME);
++            body.put("versionCode", BuildConfig.VERSION_CODE);
++            body.put("corsEnabled", Settings.getCorsImageEnabled());
++            String rawServer = Settings.getCorsImageServer();
++            String normalizedServer = CorsImageProxy.normalizeServer(rawServer);
++            body.put("corsServerRaw", rawServer == null ? JSONObject.NULL : rawServer);
++            body.put("corsServerNormalized",
++                    normalizedServer == null ? JSONObject.NULL : normalizedServer);
++            body.put("logApiEnabled", Settings.getCorsLogEnabled());
++            body.put("port", PORT);
++            body.put("lastSeq", CorsLog.get().lastSeq());
++            body.put("bufferSize", CorsLog.CAPACITY);
++            body.put("buffered", CorsLog.get().size());
++            body.put("lastError", lastError == null ? JSONObject.NULL : lastError);
++        } catch (Exception ignored) {
++        }
++        return body;
++    }
++
++    private static long parseLong(String value, long fallback) {
++        if (value == null || value.isEmpty()) {
++            return fallback;
++        }
++        return Long.parseLong(value);
++    }
++
++    private void methodNotAllowed(Socket socket) throws IOException {
++        writeResponse(socket, 405, "Method Not Allowed", "{\"error\":\"method not allowed\"}",
++                "application/json; charset=utf-8");
++    }
++
++    private static Request readRequest(Socket socket) throws IOException {
++        InputStream input = new BufferedInputStream(socket.getInputStream());
++        ByteArrayOutputStream header = new ByteArrayOutputStream();
++        int b;
++        while ((b = input.read()) != -1) {
++            header.write(b);
++            if (header.size() >= MAX_HEADER_BYTES) {
++                return null;
++            }
++            if (endsWithHeader(header)) {
++                break;
++            }
++        }
++        if (header.size() == 0) {
++            return null;
++        }
++        String text = header.toString(StandardCharsets.UTF_8.name());
++        int lineEnd = text.indexOf("\r\n");
++        if (lineEnd < 0) {
++            return null;
++        }
++        String line = text.substring(0, lineEnd);
++        String[] parts = line.split(" ");
++        if (parts.length < 2) {
++            return null;
++        }
++        return new Request(parts[0], parts[1]);
++    }
++
++    private static boolean endsWithHeader(ByteArrayOutputStream header) {
++        byte[] bytes = header.toByteArray();
++        int n = bytes.length;
++        return n >= 4
++                && bytes[n - 4] == '\r'
++                && bytes[n - 3] == '\n'
++                && bytes[n - 2] == '\r'
++                && bytes[n - 1] == '\n';
++    }
++
++    private static void writeResponse(Socket socket, int code, String reason, String body,
++                                      String contentType) {
++        try {
++            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
++            String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
++                    + "Content-Type: " + contentType + "\r\n"
++                    + "Content-Length: " + bytes.length + "\r\n"
++                    + "Connection: close\r\n"
++                    + "Access-Control-Allow-Origin: *\r\n"
++                    + "\r\n";
++            OutputStream output = socket.getOutputStream();
++            output.write(headers.getBytes(StandardCharsets.UTF_8));
++            output.write(bytes);
++            output.flush();
++        } catch (IOException ignored) {
++        }
++    }
++
++    private static void closeQuietly(Socket socket) {
++        if (socket != null) {
++            try {
++                socket.close();
++            } catch (IOException ignored) {
++            }
++        }
++    }
++
++    private static final class Request {
++        final String method;
++        final String path;
++        final Map<String, String> query;
++
++        Request(String method, String target) {
++            this.method = method;
++            int question = target.indexOf('?');
++            if (question >= 0) {
++                this.path = target.substring(0, question);
++                this.query = parseQuery(target.substring(question + 1));
++            } else {
++                this.path = target;
++                this.query = new HashMap<>();
++            }
++        }
++
++        private static Map<String, String> parseQuery(String raw) {
++            Map<String, String> query = new HashMap<>();
++            if (TextUtils.isEmpty(raw)) {
++                return query;
++            }
++            for (String pair : raw.split("&")) {
++                int equals = pair.indexOf('=');
++                try {
++                    if (equals >= 0) {
++                        query.put(URLDecoder.decode(pair.substring(0, equals), "UTF-8"),
++                                URLDecoder.decode(pair.substring(equals + 1), "UTF-8"));
++                    } else {
++                        query.put(URLDecoder.decode(pair, "UTF-8"), "");
++                    }
++                } catch (Exception ignored) {
++                }
++            }
++            return query;
++        }
++    }
++}
+diff --git a/app/src/main/java/com/hippo/ehviewer/spider/SpiderQueen.java b/app/src/main/java/com/hippo/ehviewer/spider/SpiderQueen.java
+index f77f7c9..3c98066 100644
+--- a/app/src/main/java/com/hippo/ehviewer/spider/SpiderQueen.java
++++ b/app/src/main/java/com/hippo/ehviewer/spider/SpiderQueen.java
+@@ -21,6 +21,7 @@ import android.content.Context;
+ import android.graphics.BitmapFactory;
+ import android.os.AsyncTask;
+ import android.os.Process;
++import android.os.SystemClock;
+ import android.text.TextUtils;
+ import android.util.Log;
+ import android.util.SparseArray;
+@@ -39,6 +40,7 @@ import com.hippo.ehviewer.R;
+ import com.hippo.ehviewer.Settings;
+ import com.hippo.ehviewer.client.EhEngine;
+ import com.hippo.ehviewer.client.CorsImageProxy;
++import com.hippo.ehviewer.client.CorsLog;
+ import com.hippo.ehviewer.client.EhRequestBuilder;
+ import com.hippo.ehviewer.client.EhUrl;
+ import com.hippo.ehviewer.client.data.GalleryInfo;
+@@ -1414,6 +1416,9 @@ public final class SpiderQueen implements Runnable {
+                     }
+                 }
+ 
++                long corsStarted = SystemClock.elapsedRealtime();
++                CorsLog.request("spider", targetImageUrl, requestUrl, usingCors, i + 1, index);
++
+                 // Download image
+                 InputStream is = null;
+                 try {
+@@ -1428,6 +1433,11 @@ public final class SpiderQueen implements Runnable {
+                             .newCall(new EhRequestBuilder(requestUrl, referer).build());
+                     Response response = call.execute();
+                     ResponseBody responseBody = response.body();
++                    CorsLog.response("spider", targetImageUrl, response.code(),
++                            responseBody != null && responseBody.contentType() != null
++                                    ? responseBody.contentType().toString() : null,
++                            responseBody != null ? responseBody.contentLength() : -1,
++                            SystemClock.elapsedRealtime() - corsStarted, usingCors, index);
+ 
+                     String responseUrl = null;
+                     if (response.networkResponse() != null) {
+@@ -1438,6 +1448,8 @@ public final class SpiderQueen implements Runnable {
+                     // 反劫持校验；CORS 中转时不比对最终 URL，避免误判。
+                     if (!usingCors && !targetImageUrl.equals(responseUrl)) {
+                         error = "链接疑似被劫持\nThe link is suspected to be hijacked";
++                        CorsLog.fallback("spider", targetImageUrl, "hijack", false,
++                                response.code(), null, index, error);
+                         response.close();
+                         forceHtml = true;
+                         continue;
+@@ -1445,11 +1457,14 @@ public final class SpiderQueen implements Runnable {
+ 
+                     if (response.code() >= 400) {
+                         // Maybe 404
++                        CorsLog.fallback("spider", targetImageUrl, "status", usingCors,
++                                response.code(), null, index, null);
+                         response.close();
+                         if (usingCors) {
+                             corsFailed = true;
+                             mSpiderDen.remove(index);
+                             error = "CORS bad code: " + response.code();
++                            CorsLog.retry("spider", targetImageUrl, "status", index);
+                             continue;
+                         }
+                         error = "Bad code: " + response.code();
+@@ -1458,11 +1473,14 @@ public final class SpiderQueen implements Runnable {
+                     }
+ 
+                     if (responseBody == null) {
++                        CorsLog.fallback("spider", targetImageUrl, "empty_body", usingCors,
++                                response.code(), null, index, null);
+                         response.close();
+                         if (usingCors) {
+                             corsFailed = true;
+                             mSpiderDen.remove(index);
+                             error = "CORS empty response body";
++                            CorsLog.retry("spider", targetImageUrl, "empty_body", index);
+                             continue;
+                         }
+                         error = "Empty response body";
+@@ -1475,10 +1493,13 @@ public final class SpiderQueen implements Runnable {
+                     MediaType mediaType = responseBody.contentType();
+                     if (usingCors && mediaType != null
+                             && !"image".equalsIgnoreCase(mediaType.type())) {
++                        CorsLog.fallback("spider", targetImageUrl, "non_image", true,
++                                response.code(), mediaType.toString(), index, null);
+                         response.close();
+                         corsFailed = true;
+                         mSpiderDen.remove(index);
+                         error = "CORS non-image response";
++                        CorsLog.retry("spider", targetImageUrl, "non_image", index);
+                         continue;
+                     }
+                     if (mediaType != null) {
+@@ -1499,6 +1520,8 @@ public final class SpiderQueen implements Runnable {
+                         if (osPipe == null) {
+                             // Can't get pipe
+                             error = GetText.getString(R.string.error_write_failed);
++                            CorsLog.fallback("spider", targetImageUrl, "write_failed", usingCors,
++                                    response.code(), null, index, error);
+                             response.close();
+                             break;
+                         }
+@@ -1554,6 +1577,11 @@ public final class SpiderQueen implements Runnable {
+                                 if (usingCors) {
+                                     // Truncated relay response: discard the partial
+                                     // file and retry the original URL once.
++                                    CorsLog.fallback("spider", targetImageUrl, "truncated", true,
++                                            response.code(),
++                                            responseBody.contentType() != null
++                                                    ? responseBody.contentType().toString() : null,
++                                            index, error);
+                                     corsFailed = true;
+                                     error = "CORS incomplete response";
+                                     if (osPipe != null) {
+@@ -1562,6 +1590,7 @@ public final class SpiderQueen implements Runnable {
+                                         osPipe = null;
+                                     }
+                                     mSpiderDen.remove(index);
++                                    CorsLog.retry("spider", targetImageUrl, "truncated", index);
+                                     continue;
+                                 }
+                                 error = "Incomplete";
+@@ -1604,6 +1633,11 @@ public final class SpiderQueen implements Runnable {
+                         }
+                         if (isPlainTxt) {
+                             if (usingCors) {
++                                CorsLog.fallback("spider", targetImageUrl, "plain_text", true,
++                                        response.code(),
++                                        responseBody.contentType() != null
++                                                ? responseBody.contentType().toString() : null,
++                                        index, null);
+                                 corsFailed = true;
+                                 error = "CORS plain text response";
+                                 if (isPipe != null) {
+@@ -1612,6 +1646,7 @@ public final class SpiderQueen implements Runnable {
+                                     isPipe = null;
+                                 }
+                                 mSpiderDen.remove(index);
++                                CorsLog.retry("spider", targetImageUrl, "plain_text", index);
+                                 continue;
+                             }
+                             error = GetText.getString(R.string.error_reading_failed);
+@@ -1637,6 +1672,9 @@ public final class SpiderQueen implements Runnable {
+                     }
+ 
+                     // Download finished
++                    CorsLog.result("spider", targetImageUrl, true,
++                            responseBody.contentLength(),
++                            SystemClock.elapsedRealtime() - corsStarted, usingCors, index);
+                     updatePageState(index, STATE_FINISHED);
+                     try {
+                         Thread.sleep(mDownloadDelay);
+@@ -1647,9 +1685,12 @@ public final class SpiderQueen implements Runnable {
+                 } catch (IOException | NoSuchElementException e) {
+                     e.printStackTrace();
+                     error = GetText.getString(R.string.error_socket);
++                    CorsLog.fallback("spider", targetImageUrl, "io", usingCors,
++                            -1, null, index, e.getMessage());
+                     if (usingCors) {
+                         corsFailed = true;
+                         mSpiderDen.remove(index);
++                        CorsLog.retry("spider", targetImageUrl, "io", index);
+                         forceHtml = false;
+                     } else {
+                         forceHtml = true;
+diff --git a/app/src/main/java/com/hippo/ehviewer/ui/fragment/EhFragment.java b/app/src/main/java/com/hippo/ehviewer/ui/fragment/EhFragment.java
+index b37b6ad..09f0c30 100644
+--- a/app/src/main/java/com/hippo/ehviewer/ui/fragment/EhFragment.java
++++ b/app/src/main/java/com/hippo/ehviewer/ui/fragment/EhFragment.java
+@@ -28,8 +28,11 @@ import com.hippo.ehviewer.EhApplication;
+ import com.hippo.ehviewer.EhDB;
+ import com.hippo.ehviewer.R;
+ import com.hippo.ehviewer.Settings;
++import com.hippo.ehviewer.client.CorsLogServer;
+ import com.hippo.ehviewer.client.EhTagDatabase;
+ 
++import java.util.List;
++
+ public class EhFragment extends BasePreferenceFragmentCompat
+         implements Preference.OnPreferenceChangeListener {
+ 
+@@ -48,6 +51,13 @@ public class EhFragment extends BasePreferenceFragmentCompat
+         Preference showTagTranslations = findPreference(Settings.KEY_SHOW_TAG_TRANSLATIONS);
+         Preference showGalleryComment = findPreference(Settings.KEY_SHOW_GALLERY_COMMENT);
+         Preference tagTranslationsSource = findPreference("tag_translations_source");
++        Preference corsLogEnabled = findPreference("cors_log_enabled");
++        Preference corsLogStatus = findPreference("cors_log_status");
++
++        if (corsLogEnabled != null) {
++            corsLogEnabled.setOnPreferenceChangeListener(this);
++        }
++        updateCorsLogStatus(corsLogStatus);
+ 
+         // System theme display
+         Preference systemTheme = findPreference("system_theme");
+@@ -72,6 +82,32 @@ public class EhFragment extends BasePreferenceFragmentCompat
+         }
+     }
+ 
++    @Override
++    public void onResume() {
++        super.onResume();
++        updateCorsLogStatus(findPreference("cors_log_status"));
++    }
++
++    private void updateCorsLogStatus(@Nullable Preference status) {
++        if (status == null) {
++            return;
++        }
++        if (!Settings.getCorsLogEnabled()) {
++            status.setSummary(R.string.settings_eh_cors_log_status_off);
++            return;
++        }
++        if (CorsLogServer.get().isRunning()) {
++            List<String> addresses = CorsLogServer.getLanAddresses();
++            String host = addresses.isEmpty() ? "127.0.0.1" : addresses.get(0);
++            status.setSummary(getString(R.string.settings_eh_cors_log_status_on,
++                    host, String.valueOf(CorsLogServer.PORT)));
++        } else {
++            String error = CorsLogServer.get().getLastError();
++            status.setSummary(getString(R.string.settings_eh_cors_log_status_error,
++                    error == null ? "unknown" : error));
++        }
++    }
++
+     @Override
+     public boolean onPreferenceChange(Preference preference, Object newValue) {
+         String key = preference.getKey();
+@@ -109,6 +145,16 @@ public class EhFragment extends BasePreferenceFragmentCompat
+                 EhDB.MAX_HISTORY_COUNT = Settings.DEFAULT_HISTORY_INFO_SIZE;
+             }
+             return true;
++        } else if ("cors_log_enabled".equals(key)) {
++            boolean enabled = Boolean.TRUE.equals(newValue);
++            Settings.putCorsLogEnabled(enabled);
++            if (enabled) {
++                CorsLogServer.get().start();
++            } else {
++                CorsLogServer.get().stop();
++            }
++            updateCorsLogStatus(findPreference("cors_log_status"));
++            return true;
+         } else if (Settings.KEY_SHOW_GALLERY_COMMENT.equals(key)) {
+             getActivity().setResult(Activity.RESULT_OK);
+             return true;
+diff --git a/app/src/main/java/com/hippo/util/AppHelper.kt b/app/src/main/java/com/hippo/util/AppHelper.kt
+index a9894ab..c3de3eb 100644
+--- a/app/src/main/java/com/hippo/util/AppHelper.kt
++++ b/app/src/main/java/com/hippo/util/AppHelper.kt
+@@ -147,21 +147,35 @@ class AppHelper {
+             return !result
+         }
+ 
++        private val VERSION_PATTERN = Regex("""^(\d+(?:\.\d+)*)(?:-p(\d+))?$""")
++
+         @JvmStatic
+         fun compareVersion(version1: String, version2: String): Int {
+-            val parts1 = version1.split("\\.".toRegex()).toTypedArray()
+-            val parts2 = version2.split("\\.".toRegex()).toTypedArray()
+-            val length = parts1.size.coerceAtLeast(parts2.size)
++            val (base1, patch1) = parseVersion(version1)
++            val (base2, patch2) = parseVersion(version2)
++            val parts1 = base1.split('.').map { it.toIntOrNull() ?: 0 }
++            val parts2 = base2.split('.').map { it.toIntOrNull() ?: 0 }
++            val length = maxOf(parts1.size, parts2.size)
+             for (i in 0 until length) {
+-                val part1 = if (i < parts1.size) parts1[i].toInt() else 0
+-                val part2 = if (i < parts2.size) parts2[i].toInt() else 0
+-                if (part1 < part2) {
+-                    return -1
+-                } else if (part1 > part2) {
+-                    return 1
++                val part1 = parts1.getOrElse(i) { 0 }
++                val part2 = parts2.getOrElse(i) { 0 }
++                if (part1 != part2) {
++                    return if (part1 < part2) -1 else 1
+                 }
+             }
+-            return 0
++            return patch1.compareTo(patch2)
++        }
++
++        private fun parseVersion(version: String): Pair<String, Int> {
++            val normalized = version.trim()
++            VERSION_PATTERN.matchEntire(normalized)?.let { match ->
++                return match.groupValues[1] to (match.groupValues[2].toIntOrNull() ?: 0)
++            }
++            // Keep the numeric prefix per segment; unknown suffixes compare as 0.
++            val base = normalized.split('.').joinToString(".") { segment ->
++                segment.takeWhile { it.isDigit() }.ifEmpty { "0" }
++            }
++            return base to 0
+         }
+     }
+ }
+diff --git a/app/src/main/res/values-zh-rCN/strings.xml b/app/src/main/res/values-zh-rCN/strings.xml
+index fb40835..6fa8277 100644
+--- a/app/src/main/res/values-zh-rCN/strings.xml
++++ b/app/src/main/res/values-zh-rCN/strings.xml
+@@ -552,6 +552,12 @@
+     <string name="settings_eh_cors_image_enabled_summary">通过自定义 CORS 服务器加载图片，失败自动回退原图</string>
+     <string name="settings_eh_cors_image_server">CORS 服务器地址</string>
+     <string name="settings_eh_cors_image_server_summary">路径前缀式，例如 https://cors.example.com/</string>
++    <string name="settings_eh_cors_log_enabled">在线日志 API</string>
++    <string name="settings_eh_cors_log_enabled_summary">开启后在 18765 端口提供只读日志；同一局域网内无需鉴权即可读取</string>
++    <string name="settings_eh_cors_log_status">日志 API 状态</string>
++    <string name="settings_eh_cors_log_status_off">未开启</string>
++    <string name="settings_eh_cors_log_status_on">运行中：http://%1$s:%2$s/logs</string>
++    <string name="settings_eh_cors_log_status_error">启动失败：%1$s</string>
+ 
+     <string name="settings_eh_cellular_network_warning">移动网络警告</string>
+ 
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 54db01b..550cd8e 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -640,6 +640,12 @@
+     <string name="settings_eh_cors_image_enabled_summary">Load images through a custom CORS relay; fall back to the original URL on failure</string>
+     <string name="settings_eh_cors_image_server">CORS server URL</string>
+     <string name="settings_eh_cors_image_server_summary">Path-prefix style, e.g. https://cors.example.com/</string>
++    <string name="settings_eh_cors_log_enabled">Online log API</string>
++    <string name="settings_eh_cors_log_enabled_summary">Expose read-only logs on port 18765; anyone on the same LAN can read them without authentication</string>
++    <string name="settings_eh_cors_log_status">Log API status</string>
++    <string name="settings_eh_cors_log_status_off">Disabled</string>
++    <string name="settings_eh_cors_log_status_on">Running: http://%1$s:%2$s/logs</string>
++    <string name="settings_eh_cors_log_status_error">Failed: %1$s</string>
+ 
+     <string name="settings_eh_cellular_network_warning">Cellular network warning</string>
+ 
+diff --git a/app/src/main/res/xml/eh_settings.xml b/app/src/main/res/xml/eh_settings.xml
+index ca8d69b..1647ebb 100644
+--- a/app/src/main/res/xml/eh_settings.xml
++++ b/app/src/main/res/xml/eh_settings.xml
+@@ -223,4 +223,16 @@
+         android:summary="@string/settings_eh_cors_image_server_summary"
+         android:title="@string/settings_eh_cors_image_server" />
+ 
++    <com.hippo.preference.SwitchPreference
++        android:defaultValue="false"
++        android:key="cors_log_enabled"
++        android:summary="@string/settings_eh_cors_log_enabled_summary"
++        android:title="@string/settings_eh_cors_log_enabled" />
++
++    <Preference
++        android:key="cors_log_status"
++        android:persistent="false"
++        android:summary="@string/settings_eh_cors_log_status_off"
++        android:title="@string/settings_eh_cors_log_status" />
++
+ </PreferenceScreen>
+diff --git a/app/src/test/java/com/hippo/ehviewer/client/CorsLogTest.java b/app/src/test/java/com/hippo/ehviewer/client/CorsLogTest.java
+new file mode 100644
+index 0000000..36dc968
+--- /dev/null
++++ b/app/src/test/java/com/hippo/ehviewer/client/CorsLogTest.java
+@@ -0,0 +1,94 @@
++package com.hippo.ehviewer.client;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.robolectric.RobolectricTestRunner;
++
++import java.util.List;
++
++@RunWith(RobolectricTestRunner.class)
++public class CorsLogTest {
++
++    @Test
++    public void appendsAndFiltersBySeq() {
++        CorsLog log = CorsLog.get();
++        log.clear();
++        long start = log.lastSeq();
++
++        log.log("test.a", CorsLog.obj("url", "https://example.com/a"));
++        log.log("test.b", CorsLog.obj("n", 1));
++
++        List<CorsLog.Entry> all = log.snapshot(start, 10);
++        assertEquals(2, all.size());
++        assertEquals("test.a", all.get(0).event);
++        assertEquals("test.b", all.get(1).event);
++
++        List<CorsLog.Entry> after = log.snapshot(all.get(0).seq, 10);
++        assertEquals(1, after.size());
++        assertEquals("test.b", after.get(0).event);
++    }
++
++    @Test
++    public void capacityEvictsOldest() {
++        CorsLog log = CorsLog.get();
++        log.clear();
++        for (int i = 0; i < CorsLog.CAPACITY + 5; i++) {
++            log.log("test.n", CorsLog.obj("n", i));
++        }
++
++        List<CorsLog.Entry> all = log.snapshot(0, CorsLog.CAPACITY + 10);
++        assertEquals(CorsLog.CAPACITY, all.size());
++        assertEquals(log.lastSeq() - CorsLog.CAPACITY + 1, all.get(0).seq);
++    }
++
++    @Test
++    public void clearHidesOldSeq() {
++        CorsLog log = CorsLog.get();
++        log.clear();
++        log.log("test.a", CorsLog.obj("n", 1));
++        long oldSeq = log.snapshot(0, 10).get(0).seq;
++
++        int cleared = log.clear();
++        assertTrue(cleared >= 1);
++        assertTrue(log.snapshot(0, 10).isEmpty());
++        assertTrue(log.snapshot(oldSeq, 10).isEmpty());
++
++        log.log("test.b", CorsLog.obj("n", 2));
++        List<CorsLog.Entry> entries = log.snapshot(0, 10);
++        assertEquals(1, entries.size());
++        assertEquals("test.b", entries.get(0).event);
++    }
++
++    @Test
++    public void awaitReturnsNewEntry() throws Exception {
++        CorsLog log = CorsLog.get();
++        log.clear();
++        long start = log.lastSeq();
++
++        Thread writer = new Thread(() -> {
++            try {
++                Thread.sleep(100L);
++            } catch (InterruptedException ignored) {
++            }
++            log.log("test.async", CorsLog.obj("n", 1));
++        });
++        writer.start();
++
++        List<CorsLog.Entry> entries = log.await(start, 10, 2000L);
++        writer.join();
++        assertFalse(entries.isEmpty());
++        assertEquals("test.async", entries.get(0).event);
++    }
++
++    @Test
++    public void awaitTimesOutWithoutNewEntries() throws Exception {
++        CorsLog log = CorsLog.get();
++        log.clear();
++        long start = log.lastSeq();
++        assertTrue(log.await(start, 10, 50L).isEmpty());
++    }
++}
+diff --git a/app/src/test/java/com/hippo/util/AppHelperVersionTest.java b/app/src/test/java/com/hippo/util/AppHelperVersionTest.java
+new file mode 100644
+index 0000000..532025c
+--- /dev/null
++++ b/app/src/test/java/com/hippo/util/AppHelperVersionTest.java
+@@ -0,0 +1,26 @@
++package com.hippo.util;
++
++import static org.junit.Assert.assertEquals;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.robolectric.RobolectricTestRunner;
++
++@RunWith(RobolectricTestRunner.class)
++public class AppHelperVersionTest {
++
++    @Test
++    public void comparesPatchRevisions() {
++        assertEquals(-1, AppHelper.compareVersion("2.0.2.7", "2.0.2.7-p1"));
++        assertEquals(1, AppHelper.compareVersion("2.0.2.7-p2", "2.0.2.7-p1"));
++        assertEquals(0, AppHelper.compareVersion("2.0.2.7", "2.0.2.7-p0"));
++        assertEquals(-1, AppHelper.compareVersion("2.0.2.7-p2", "2.0.2.8-p1"));
++        assertEquals(0, AppHelper.compareVersion("2.0.2.7", "2.0.2.7"));
++    }
++
++    @Test
++    public void invalidVersionsDoNotThrow() {
++        assertEquals(0, AppHelper.compareVersion("", ""));
++        assertEquals(0, AppHelper.compareVersion("abc", "abc"));
++    }
++}

@@ -1,0 +1,105 @@
+name: Sync Upstream
+
+# Every-2-days upstream sync. This workflow never builds and never applies the
+# source patches: it only rebases main onto upstream and verifies that
+# both CORS patches still apply.
+
+on:
+  schedule:
+    - cron: '0 0 */2 * *'
+  workflow_dispatch:
+
+env:
+  UPSTREAM_REPO: https://github.com/xiaojieonly/Ehviewer_CN_SXJ.git
+  UPSTREAM_BRANCH: BiLi_PC_Gamer
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Sync main onto upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || true
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+
+          UPSTREAM=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          ORIGIN=$(git rev-parse "origin/main")
+          echo "upstream: $UPSTREAM"
+          echo "origin:   $ORIGIN"
+
+          if git merge-base --is-ancestor "$UPSTREAM" "$ORIGIN"; then
+            echo "upstream already included; nothing to do"
+            exit 0
+          fi
+
+          git switch main
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git rebase "upstream/$UPSTREAM_BRANCH"
+          git push origin main --force-with-lease
+
+      - name: Verify CORS patch still applies
+        id: patchcheck
+        run: |
+          if git apply --check patches/ehviewer-cors-functional.patch \
+             && git apply --check patches/ehviewer-cors-nonfunctional.patch; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            { git apply --check patches/ehviewer-cors-functional.patch
+              git apply --check patches/ehviewer-cors-nonfunctional.patch
+            } 2>&1 | head -30 > /tmp/patch-check.log || true
+          fi
+
+      - name: Open issue on patch conflict
+        if: steps.patchcheck.outputs.ok == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")
+          TITLE="patch rebase conflict after sync to upstream/$UPSTREAM_BRANCH ($SHA)"
+          if gh issue list --search "$TITLE in:title" --state open --json title | grep -q "$SHA"; then
+            echo "issue already open for $SHA"
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --body "$(cat <<EOF
+          Every-2-days sync rebased \`main\` onto \`upstream/$UPSTREAM_BRANCH\` ($SHA),
+          but one of \`patches/ehviewer-cors-functional.patch\` or \`patches/ehviewer-cors-nonfunctional.patch\` no longer applies.
+
+          \`\`\`
+          $(cat /tmp/patch-check.log 2>/dev/null || true)
+          \`\`\`
+
+          The sync was pushed; resolve the patch before the next release.
+          EOF
+          )"
+
+      - name: Open issue when the rebase itself fails
+        if: failure() && steps.patchcheck.outcome == 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="upstream sync/rebase failed"
+          if gh issue list --search "$TITLE in:title" --state open \
+                  --json title -q '.[].title' | grep -Fxq "$TITLE"; then
+            echo "issue already open"
+            exit 0
+          fi
+          gh issue create --title "$TITLE" --body "$(cat <<EOF
+          The every-2-days sync could not rebase \`main\` onto
+          \`upstream/$UPSTREAM_BRANCH\`. Resolve the conflict manually, then rerun
+          the workflow.
+
+          Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )"

@@ -1,0 +1,113 @@
+name: Release Sync
+
+# Every-2-days upstream release detection. For every new upstream tag, create a
+# branch named after the tag (e.g. 2.0.2.7), apply the CORS patches, build a release
+# APK signed with the fixed custom keystore, publish it as <tag>-cors in the main
+# repo, and update the `update` branch feed.
+
+on:
+  schedule:
+    - cron: '0 2 */2 * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Specific upstream tag (optional)'
+        required: false
+        type: string
+      force:
+        description: 'Force rebuild/release for existing repos (true/false)'
+        required: false
+        type: string
+        default: 'false'
+
+env:
+  OWNER: zero-custom
+  MAIN_REPO: zero-custom/Ehviewer_CN_SXJ
+  UPSTREAM_REPO: https://github.com/xiaojieonly/Ehviewer_CN_SXJ.git
+  UPSTREAM_BRANCH: BiLi_PC_Gamer
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # ubuntu-latest already ships the Android SDK, NDK, build-tools and CMake.
+      - name: Show Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" | head
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Detect pending tags
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+          BASELINE_TAG: ${{ vars.BASELINE_TAG || '2.0.2.7' }}
+          MANUAL_TAG: ${{ github.event.inputs.tag }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: sh .github/scripts/detect-new-tags.sh
+
+      - name: Prepare branches and publish
+        if: steps.detect.outputs.has_pending == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          OWNER: zero-custom
+          MAIN_REPO: zero-custom/Ehviewer_CN_SXJ
+          UPSTREAM_REPO: https://github.com/xiaojieonly/Ehviewer_CN_SXJ.git
+          FORCE: ${{ github.event.inputs.force }}
+          PENDING_TAGS: ${{ steps.detect.outputs.pending_tags }}
+        run: |
+          failed=""
+          for tag in $PENDING_TAGS; do
+            echo "==> $tag"
+            if ! sh .github/scripts/prepare-branch.sh "$tag"; then
+              echo "::error::prepare-branch failed for $tag"
+              failed="$failed $tag"
+              continue
+            fi
+            if ! sh .github/scripts/build-and-publish.sh "$tag"; then
+              echo "::error::build-and-publish failed for $tag"
+              failed="$failed $tag"
+              continue
+            fi
+          done
+
+          if [ -n "$failed" ]; then
+            MAIN_REPO="$OWNER/Ehviewer_CN_SXJ"
+            FAILED_TAGS="$(echo "$failed" | sed 's/^ *//; s/ *$//' | tr ' ' ',')"
+            TITLE="release-sync failure for $FAILED_TAGS"
+            BODY_FILE="$(mktemp)"
+            {
+              printf 'Failed tags: %s\n\n' "$FAILED_TAGS"
+              printf 'Workflow run: %s/%s/actions/runs/%s\n' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            } > "$BODY_FILE"
+            if gh issue list --repo "$MAIN_REPO" --state open \
+                    --search "$TITLE in:title" --json title -q '.[].title' \
+                    | grep -Fxq "$TITLE"; then
+              echo "failure issue already open: $TITLE"
+            else
+              gh issue create --repo "$MAIN_REPO" --title "$TITLE" --body-file "$BODY_FILE"
+            fi
+            rm -f "$BODY_FILE"
+            exit 1
+          fi
