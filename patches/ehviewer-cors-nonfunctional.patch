@@ -1,0 +1,199 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index abdad2b..676f28a 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -26,7 +26,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        applicationId "com.xjs.ehviewer"
++        applicationId "com.zero.ehviewer"
+         minSdkVersion 23
+         //noinspection ExpiredTargetSdkVersion
+         targetSdkVersion 30
+@@ -58,11 +58,11 @@ android {
+         release {
+             minifyEnabled false
+             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+-            buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.hippo.ehviewer.fileprovider"'
++            buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.zero.ehviewer.fileprovider"'
+         }
+         debug {
+             applicationIdSuffix ".debug1"
+-            buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.hippo.ehviewer.debug.fileprovider"'
++            buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.zero.ehviewer.debug1.fileprovider"'
+         }
+     }
+ 
+
+diff --git a/app/src/main/res/values/arrays.xml b/app/src/main/res/values/arrays.xml
+index 8ec608f..0673900 100644
+--- a/app/src/main/res/values/arrays.xml
++++ b/app/src/main/res/values/arrays.xml
+@@ -412,7 +412,7 @@
+ 
+     <string-array name="update_metadata">
+         <item>update_json</item>
+-        <item>https://raw.githubusercontent.com/xiaojieonly/Ehviewer_CN_SXJ/refs/heads/BiLi_PC_Gamer/feedauthor/update.json</item>
++        <item>https://raw.githubusercontent.com/zero-custom/Ehviewer_CN_SXJ/update/feedauthor/update.json</item>
+     </string-array>
+ 
+ 
+
+diff --git a/app/src/main/java/com/hippo/ehviewer/ui/dialog/UpdateDialog.kt b/app/src/main/java/com/hippo/ehviewer/ui/dialog/UpdateDialog.kt
+index 14c0c51..06ef4de 100644
+--- a/app/src/main/java/com/hippo/ehviewer/ui/dialog/UpdateDialog.kt
++++ b/app/src/main/java/com/hippo/ehviewer/ui/dialog/UpdateDialog.kt
+@@ -29,11 +29,11 @@ import kotlin.properties.Delegates
+ 
+ class UpdateDialog(private val activity: Activity) {
+     companion object {
+-        const val GITHUB_RELEASE_URL = "https://github.com/xiaojieonly/Ehviewer_CN_SXJ/releases"
++        const val GITHUB_RELEASE_URL = "https://github.com/zero-custom/Ehviewer_CN_SXJ/releases"
+         const val GITHUB_README_URL =
+-            "https://github.com/xiaojieonly/Ehviewer_CN_SXJ/blob/BiLi_PC_Gamer/README.md"
++            "https://github.com/zero-custom/Ehviewer_CN_SXJ/blob/main/README.md"
+         const val GITHUB_SUPPORT_URL =
+-            "https://github.com/xiaojieonly/Ehviewer_CN_SXJ/blob/BiLi_PC_Gamer/feedauthor/support.md"
++            "https://github.com/zero-custom/Ehviewer_CN_SXJ"
+         const val INSTALL_PERMISSION_CODE = 1002
+ 
+         // TODO more lock for different language
+@@ -127,11 +127,17 @@ class UpdateDialog(private val activity: Activity) {
+     private fun downloadApk(
+         dialog: DialogInterface?,
+         id: Int,
+-        downloadUrl: String,
++        downloadUrl: String?,
+         version: String
+     ) {
+-        val uri = GITHUB_README_URL.toUri()
+-        val intent = Intent(Intent.ACTION_VIEW, uri)
++        val target = if (downloadUrl != null &&
++            (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://"))
++        ) {
++            downloadUrl
++        } else {
++            GITHUB_RELEASE_URL
++        }
++        val intent = Intent(Intent.ACTION_VIEW, target.toUri())
+         activity.startActivity(intent)
+         dialog?.dismiss()
+ //        val title = "Ehviewer$version.apk"
+
+diff --git a/app/src/main/res/values-de/strings.xml b/app/src/main/res/values-de/strings.xml
+--- a/app/src/main/res/values-de/strings.xml
++++ b/app/src/main/res/values-de/strings.xml
+@@ -44,7 +44,7 @@
+     <string name="network_remind">VPN wurde erkannt, bitte achte auf deine Netzwerksicherheit</string>
+     <string name="no_blicklist">Hier ist die schwarze Liste</string>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+     <string name="homepage">Startseite</string>
+     <string name="subscription">Gefolgte Etiketten</string>
+     <string name="whats_hot">Top-Listen</string>
+
+diff --git a/app/src/main/res/values-en/strings.xml b/app/src/main/res/values-en/strings.xml
+--- a/app/src/main/res/values-en/strings.xml
++++ b/app/src/main/res/values-en/strings.xml
+@@ -29,7 +29,7 @@
+ 
+     <string name="settings_about_donate_guide">guide</string>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <string name="site_e" translatable="false">e-hentai</string>
+     <string name="site_ex" translatable="false">exhentai</string>
+
+diff --git a/app/src/main/res/values-es/strings.xml b/app/src/main/res/values-es/strings.xml
+--- a/app/src/main/res/values-es/strings.xml
++++ b/app/src/main/res/values-es/strings.xml
+@@ -41,7 +41,7 @@
+     <string name="network_remind">Se ha detectado que el VPN está habilitado, por favor preste atención a la seguridad de la red</string>
+     <string name="no_blicklist">Aquí está la lista negra</string>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <!-- Category -->
+ 
+
+diff --git a/app/src/main/res/values-fr/strings.xml b/app/src/main/res/values-fr/strings.xml
+--- a/app/src/main/res/values-fr/strings.xml
++++ b/app/src/main/res/values-fr/strings.xml
+@@ -42,7 +42,7 @@
+     <string name="network_remind">VPN détecté, veuillez faire attention à votre sécurité réseau</string>
+     <string name="no_blicklist">Voici la liste noire</string>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <!-- Category -->
+ 
+
+diff --git a/app/src/main/res/values-ja/strings.xml b/app/src/main/res/values-ja/strings.xml
+--- a/app/src/main/res/values-ja/strings.xml
++++ b/app/src/main/res/values-ja/strings.xml
+@@ -41,7 +41,7 @@
+     <string name="network_remind">VPN が有効になっていることが検出されました。ネットワークセキュリティに注意してください</string>
+     <!--    <string name="network_remind">It has been detected that the vpn is enabled, please pay attention to network security</string>-->
+     <string name="no_blicklist">これはブラックリストです</string>
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+     <!-- Theme -->
+     <string name="theme_light">ライトテーマ</string>
+     <string name="theme_dark">ダークテーマ</string>
+
+diff --git a/app/src/main/res/values-ko/strings.xml b/app/src/main/res/values-ko/strings.xml
+--- a/app/src/main/res/values-ko/strings.xml
++++ b/app/src/main/res/values-ko/strings.xml
+@@ -43,7 +43,7 @@
+ 
+     <string name="no_blicklist">여기는 차단 목록입니다</string>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <!-- Theme -->
+     <string name="theme_light">밝은 테마</string>
+
+diff --git a/app/src/main/res/values-th/strings.xml b/app/src/main/res/values-th/strings.xml
+--- a/app/src/main/res/values-th/strings.xml
++++ b/app/src/main/res/values-th/strings.xml
+@@ -42,7 +42,7 @@
+     <string name="network_remind">ตรวจพบว่าเปิดใช้งาน VPN แล้ว โปรดระวังความปลอดภัยเครือข่ายของคุณ</string>
+     <string name="no_blicklist">นี่คือรายชื่อดำ</string>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <!-- Theme -->
+     <string name="theme_light">ธีมสีสว่าง</string>
+
+diff --git a/app/src/main/res/values-zh-rHK/strings.xml b/app/src/main/res/values-zh-rHK/strings.xml
+--- a/app/src/main/res/values-zh-rHK/strings.xml
++++ b/app/src/main/res/values-zh-rHK/strings.xml
+@@ -44,7 +44,7 @@
+     <string name="no_blicklist">這裏是黑名單</string>
+ 
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <string name="site_e" translatable="false">e-hentai</string>
+     <string name="site_ex" translatable="false">exhentai</string>
+
+diff --git a/app/src/main/res/values-zh-rTW/strings.xml b/app/src/main/res/values-zh-rTW/strings.xml
+--- a/app/src/main/res/values-zh-rTW/strings.xml
++++ b/app/src/main/res/values-zh-rTW/strings.xml
+@@ -17,7 +17,7 @@
+ 
+ <resources>
+ 
+-    <string name="app_name">EhViewer</string>
++    <string name="app_name">EhViewer CORS</string>
+ 
+     <string name="site_e" translatable="false">e-hentai</string>
+     <string name="site_ex" translatable="false">exhentai</string>
