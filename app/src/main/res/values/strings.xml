@@ -58,7 +58,7 @@
     <string name="settings_eh_system_theme">系统主题</string>
 
 
-    <string name="app_name">EhViewer</string>
+    <string name="app_name">EhViewer CORS</string>
 
     <string name="site_e" translatable="false">e-hentai</string>
     <string name="site_ex" translatable="false">exhentai</string>
@@ -636,6 +636,11 @@
     <string name="settings_eh_tag_translations_source_url">https://placeholder</string>
     <string name="settings_eh_filter">Block gallery</string>
     <string name="settings_eh_filter_summary">Block gallery by title, uploader and tags</string>
+    <string name="settings_eh_cors_image_enabled">CORS image acceleration</string>
+    <string name="settings_eh_cors_image_enabled_summary">Load images through a custom CORS relay; fall back to the original URL on failure</string>
+    <string name="settings_eh_cors_image_server">CORS server URL</string>
+    <string name="settings_eh_cors_image_server_summary">Path-prefix style, e.g. https://cors.example.com/</string>
+
     <string name="settings_eh_cellular_network_warning">Cellular network warning</string>
 
     <string name="settings_read">Read</string>
