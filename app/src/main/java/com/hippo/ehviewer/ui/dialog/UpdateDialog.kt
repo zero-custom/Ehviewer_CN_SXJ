@@ -29,11 +29,11 @@ import kotlin.properties.Delegates
 
 class UpdateDialog(private val activity: Activity) {
     companion object {
-        const val GITHUB_RELEASE_URL = "https://github.com/xiaojieonly/Ehviewer_CN_SXJ/releases"
+        const val GITHUB_RELEASE_URL = "https://github.com/zero-custom/Ehviewer_CN_SXJ/releases"
         const val GITHUB_README_URL =
-            "https://github.com/xiaojieonly/Ehviewer_CN_SXJ/blob/BiLi_PC_Gamer/README.md"
+            "https://github.com/zero-custom/Ehviewer_CN_SXJ/blob/main/README.md"
         const val GITHUB_SUPPORT_URL =
-            "https://github.com/xiaojieonly/Ehviewer_CN_SXJ/blob/BiLi_PC_Gamer/feedauthor/support.md"
+            "https://github.com/zero-custom/Ehviewer_CN_SXJ"
         const val INSTALL_PERMISSION_CODE = 1002
 
         // TODO more lock for different language
@@ -127,11 +127,17 @@ class UpdateDialog(private val activity: Activity) {
     private fun downloadApk(
         dialog: DialogInterface?,
         id: Int,
-        downloadUrl: String,
+        downloadUrl: String?,
         version: String
     ) {
-        val uri = GITHUB_README_URL.toUri()
-        val intent = Intent(Intent.ACTION_VIEW, uri)
+        val target = if (downloadUrl != null &&
+            (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://"))
+        ) {
+            downloadUrl
+        } else {
+            GITHUB_RELEASE_URL
+        }
+        val intent = Intent(Intent.ACTION_VIEW, target.toUri())
         activity.startActivity(intent)
         dialog?.dismiss()
 //        val title = "Ehviewer$version.apk"
