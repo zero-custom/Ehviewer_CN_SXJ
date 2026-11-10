@@ -1564,6 +1564,31 @@ public class Settings {
         putIntToStr(KEY_DOWNLOAD_TIMEOUT, value);
     }
 
+    /********************
+     ****** CORS image acceleration
+     ********************/
+    public static final String KEY_CORS_IMAGE_ENABLED = "cors_image_enabled";
+    private static final boolean DEFAULT_CORS_IMAGE_ENABLED = false;
+
+    public static boolean getCorsImageEnabled() {
+        return getBoolean(KEY_CORS_IMAGE_ENABLED, DEFAULT_CORS_IMAGE_ENABLED);
+    }
+
+    public static void putCorsImageEnabled(boolean value) {
+        putBoolean(KEY_CORS_IMAGE_ENABLED, value);
+    }
+
+    public static final String KEY_CORS_IMAGE_SERVER = "cors_image_server";
+    private static final String DEFAULT_CORS_IMAGE_SERVER = "";
+
+    public static String getCorsImageServer() {
+        return getString(KEY_CORS_IMAGE_SERVER, DEFAULT_CORS_IMAGE_SERVER);
+    }
+
+    public static void putCorsImageServer(String value) {
+        putString(KEY_CORS_IMAGE_SERVER, value);
+    }
+
     public static final String KEY_LAST_UPDATE_TIME = "last_update_time";
 
     public static long DEFAULT_LAST_UPDATE_TIME = 0L;
@@ -1574,7 +1599,7 @@ public class Settings {
         long nowTime = now.getTime();
         long msNum = nowTime - lastUpdateTime;
         long dayNum = msNum / (1000 * 60 * 60 * 24);
-        return dayNum >= 1;
+        return dayNum >= 2;
     }
 
     public static void putUpdateTime(long updateTime) {

@@ -24,6 +24,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
 
 import com.hippo.beerbelly.SimpleDiskCache;
+import com.hippo.ehviewer.client.CorsImageProxy;
 import com.hippo.streampipe.InputStreamPipe;
 import com.hippo.streampipe.OutputStreamPipe;
 
@@ -343,6 +344,34 @@ public class ConacoTask<V> {
             return mDataContainer.save(is, body.contentLength(), mediaType, this);
         }
 
+        private Response open(Request request) throws IOException {
+            Call call = mOkHttpClient.newCall(request);
+            mCall = call;
+            return call.execute();
+        }
+
+        private boolean isBadResponse(Response response) {
+            if (response == null || !response.isSuccessful()) {
+                return true;
+            }
+            ResponseBody body = response.body();
+            if (body == null || body.contentLength() == 0) {
+                return true;
+            }
+            MediaType mediaType = body.contentType();
+            if (mediaType != null) {
+                String type = mediaType.type();
+                String subtype = mediaType.subtype();
+                if ("text".equalsIgnoreCase(type)
+                        || "html".equalsIgnoreCase(subtype)
+                        || "xml".equalsIgnoreCase(subtype)
+                        || "json".equalsIgnoreCase(subtype)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         @Override
         protected V doInBackground(Void... params) {
             if (isNotNecessary(this)) {
@@ -352,12 +381,38 @@ public class ConacoTask<V> {
             V value;
             InputStream is = null;
             try {
-                // Load it from internet
-                Request request = new Request.Builder().url(mUrl).build();
-                mCall = mOkHttpClient.newCall(request);
-
-                Response response = mCall.execute();
+                // Load it from internet, preferring the optional CORS relay.
+                Request request = null;
+                Response response = null;
+                String proxiedUrl = CorsImageProxy.proxyUrl(mUrl);
+                if (proxiedUrl != null) {
+                    try {
+                        request = new Request.Builder().url(proxiedUrl).build();
+                        response = open(request);
+                        if (isBadResponse(response)) {
+                            response.close();
+                            response = null;
+                            request = null;
+                        }
+                    } catch (IOException e) {
+                        // Connection failures and timeouts on the relay must fall
+                        // back to the original URL exactly once.
+                        if (response != null) {
+                            response.close();
+                        }
+                        response = null;
+                        request = null;
+                    }
+                }
+                if (response == null) {
+                    request = new Request.Builder().url(mUrl).build();
+                    response = open(request);
+                }
                 ResponseBody body = response.body();
+                if (body == null) {
+                    response.close();
+                    return null;
+                }
                 is = body.byteStream();
 
                 if (isNotNecessary(this)) {
@@ -382,11 +437,13 @@ public class ConacoTask<V> {
                         return null;
                     }
                 } else if (mDataContainer != null && mDataContainer.isEnabled()) {
-                    // Check url Moved
-                    HttpUrl requestHttpUrl = request.url();
-                    HttpUrl responseHttpUrl = response.request().url();
-                    if (!responseHttpUrl.equals(requestHttpUrl)) {
-                        mDataContainer.onUrlMoved(mUrl, responseHttpUrl.url().toString());
+                    // Check url Moved. Never persist a CORS relay URL as the image URL.
+                    if (!CorsImageProxy.isProxied(request.url().toString())) {
+                        HttpUrl requestHttpUrl = request.url();
+                        HttpUrl responseHttpUrl = response.request().url();
+                        if (!responseHttpUrl.equals(requestHttpUrl)) {
+                            mDataContainer.onUrlMoved(mUrl, responseHttpUrl.url().toString());
+                        }
                     }
 
                     // Put to data container
